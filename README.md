@@ -13,7 +13,7 @@ Change wrangler.toml to your own.
 ```toml
 [[r2_buckets]]
 binding = 'bucket' # <~ valid JavaScript variable name, don't change this
-bucket_name = 'webdav'
+bucket_name = 'r2-webdav'
 ```
 
 Then use wrangler to deploy.

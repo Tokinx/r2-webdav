@@ -64,6 +64,11 @@ jobs:
           TESTS: basic copymove props locks
         run: TESTS="$TESTS" litmus -k "http://127.0.0.1:${WRANGLER_PORT}/" "${TEST_USERNAME}" "${TEST_PASSWORD}"
 
+      - name: Check LOCK XML compatibility
+        env:
+          TEST_URL: http://127.0.0.1:8787
+        run: python3 -m unittest discover -s tests -p '*_test.py' -v
+
       - name: Print Wrangler log on failure
         if: failure()
         run: cat /tmp/wrangler.log

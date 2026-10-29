@@ -280,11 +280,13 @@ function getElementProperty(element: Element): DeadProperty | null {
 	};
 }
 
-function parseXmlDocument(body: string): Document | null {
+function parseXmlDocument(body: string, rejectWarnings = false): Document | null {
 	let errors: string[] = [];
 	let document = new DOMParser({
 		errorHandler: {
-			warning: () => {},
+			warning: (message) => {
+				if (rejectWarnings) errors.push(message);
+			},
 			error: (message) => errors.push(message),
 			fatalError: (message) => errors.push(message),
 		},
@@ -557,14 +559,36 @@ function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean {
 	return mismatch === 0;
 }
 
-function extractLockOwner(body: string): string | undefined {
-	let owner = body.match(/<owner(?:\s[^>]*)?>([\s\S]*?)<\/owner>/i)?.[1];
-	if (owner === undefined) {
-		return undefined;
+function parseLockRequest(body: string): { scope: LockDetails['scope']; owner: string | undefined } | null {
+	let document = parseXmlDocument(body, true);
+	let root = document?.documentElement;
+	if (root?.namespaceURI !== DAV_NAMESPACE || root.localName !== 'lockinfo') {
+		return null;
 	}
 
-	owner = owner.trim();
-	return owner === '' ? undefined : owner;
+	let children = getChildElements(root).filter((child) => child.namespaceURI === DAV_NAMESPACE);
+	let scopes = children.filter((child) => child.localName === 'lockscope');
+	let types = children.filter((child) => child.localName === 'locktype');
+	let owners = children.filter((child) => child.localName === 'owner');
+	if (scopes.length !== 1 || types.length !== 1 || owners.length > 1) {
+		return null;
+	}
+	let scopeChildren = getChildElements(scopes[0]);
+	let typeChildren = getChildElements(types[0]);
+	if (
+		scopeChildren.length !== 1 ||
+		scopeChildren[0].namespaceURI !== DAV_NAMESPACE ||
+		(scopeChildren[0].localName !== 'exclusive' && scopeChildren[0].localName !== 'shared') ||
+		typeChildren.length !== 1 ||
+		typeChildren[0].namespaceURI !== DAV_NAMESPACE ||
+		typeChildren[0].localName !== 'write'
+	) {
+		return null;
+	}
+	return {
+		scope: scopeChildren[0].localName,
+		owner: owners[0] === undefined ? undefined : serializeNodeChildren(owners[0]).trim() || undefined,
+	};
 }
 
 function fromR2Object(object: R2Object | null | undefined): DavProperties {
@@ -1376,12 +1400,13 @@ async function handle_lock(request: Request, bucket: R2Bucket): Promise<Response
 	let { timeout, expiresAt } = parseTimeout(request.headers.get('Timeout'));
 	let body = await request.text();
 	// Per WebDAV, an empty LOCK request body indicates a lock refresh operation.
-	let requestedScope: LockDetails['scope'] = /<shared\b/i.test(body) ? 'shared' : 'exclusive';
-	let requestLockTokens = getRequestLockTokens(request);
-	if (body !== '' && !/<write\b/i.test(body)) {
+	let lockRequest = body === '' ? undefined : parseLockRequest(body);
+	if (lockRequest === null) {
 		return new Response('Bad Request', { status: 400 });
 	}
-	let owner = extractLockOwner(body);
+	let requestedScope = lockRequest?.scope ?? 'exclusive';
+	let owner = lockRequest?.owner;
+	let requestLockTokens = getRequestLockTokens(request);
 	let lockResponse = await assertLockPermission(request, bucket, resource_path, {
 		ignoreSharedLocksOnTarget: body !== '' && requestedScope === 'shared',
 	});
