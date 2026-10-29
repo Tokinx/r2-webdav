@@ -615,7 +615,7 @@ function fromR2Object(object: R2Object | null | undefined): DavProperties {
 		getcontentlanguage: object.httpMetadata?.contentLanguage,
 		getcontentlength: object.size.toString(),
 		getcontenttype: object.httpMetadata?.contentType,
-		getetag: object.etag,
+		getetag: object.httpEtag,
 		getlastmodified: object.uploaded.toUTCString(),
 		resourcetype: object.customMetadata?.resourcetype ?? '',
 		supportedlock: getSupportedLock(),
@@ -793,6 +793,7 @@ async function handle_get(request: Request, bucket: R2Bucket): Promise<Response>
 			// A satisfied If-None-Match means "not modified"; every other failed precondition is 412.
 			return new Response(null, {
 				status: request.headers.has('If-None-Match') ? 304 : 412,
+				headers: { ETag: object.httpEtag },
 			});
 		} else {
 			const { rangeOffset, rangeEnd } = calcContentRange(object);
@@ -801,6 +802,7 @@ async function handle_get(request: Request, bucket: R2Bucket): Promise<Response>
 			return new Response(object.body, {
 				status: rangeRequested ? 206 : 200,
 				headers: {
+					ETag: object.httpEtag,
 					'Accept-Ranges': 'bytes',
 					'Content-Type': object.httpMetadata?.contentType ?? 'application/octet-stream',
 					'Content-Length': contentLength.toString(),
@@ -873,12 +875,18 @@ async function handle_put(request: Request, bucket: R2Bucket): Promise<Response>
 	}
 
 	let body = await request.arrayBuffer();
-	await bucket.put(resource_path, body, {
+	let object = await bucket.put(resource_path, body, {
 		onlyIf: request.headers,
 		httpMetadata: request.headers,
 		customMetadata: getPreservedCustomMetadata(existing?.customMetadata),
 	});
-	return existing === null ? new Response('', { status: 201 }) : new Response(null, { status: 204 });
+	if (object === null) {
+		return new Response('Precondition Failed', { status: 412 });
+	}
+	return new Response(null, {
+		status: existing === null ? 201 : 204,
+		headers: { ETag: object.httpEtag },
+	});
 }
 
 async function handle_delete(request: Request, bucket: R2Bucket): Promise<Response> {
